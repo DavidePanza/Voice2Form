@@ -51,7 +51,7 @@ image = (
     memory=2048,
     cpu=2.0,
     gpu="L4", 
-    keep_warm=0,  # Keep warm for production use
+    #min_containers=1,   # Minimum number of containers to keep running
     max_containers=10,  
 )
 @concurrent(max_inputs=100) 
