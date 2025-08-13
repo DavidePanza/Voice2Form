@@ -1,0 +1,1 @@
+modal serve modal_minimal.py

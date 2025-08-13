@@ -6,7 +6,7 @@ import librosa
 import audeer
 import audonnx
 import audinterface
-from modal import App, Image, web_endpoint, Volume
+from modal import App, Image, fastapi_endpoint, Volume, concurrent
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -45,18 +45,15 @@ image = (
 
 @app.function(
     image=image,
-    volumes={"/persistent_model": model_volume},  # Mount persistent volume
-    timeout=300,  # 5 minutes timeout
-    memory=2048,  # 2GB memory
+    volumes={"/persistent_model": model_volume},
+    timeout=300,
+    memory=2048,
     cpu=2.0,
     gpu="L4", 
-    # keep_warm=1 
-    # Removed keep_warm for cost optimization
-    # Cold start will be ~5-10 seconds but no continuous billing
-    concurrency_limit=10,  # Allow multiple concurrent requests
-    allow_concurrent_inputs=100,  # Queue up to 100 requests
+    max_containers=10,  
 )
-@web_endpoint(method="POST", docs=True)
+@concurrent(max_inputs=10) 
+@fastapi_endpoint(method="POST", docs=True) 
 def analyze_voice_endpoint(
     audio_file: UploadFile = File(...),
     window_size: float = Form(default=1.0),
