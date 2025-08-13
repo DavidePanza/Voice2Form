@@ -1,12 +1,13 @@
 import os
 import io
 import json
+import time
 import numpy as np
 import librosa
 import audeer
 import audonnx
 import audinterface
-from modal import App, Image, web_endpoint, Volume
+from modal import App, Image, fastapi_endpoint, Volume, concurrent
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -31,7 +32,7 @@ image = (
         "python-multipart",
         "soundfile"
     ])
-    .apt_install(["ffmpeg"]) # ffmpeg for audio processing (nneeded by librosa)
+    .apt_install(["ffmpeg"])
     # Download model during image build
     .run_commands([
         "mkdir -p /model_cache",
@@ -45,18 +46,16 @@ image = (
 
 @app.function(
     image=image,
-    volumes={"/persistent_model": model_volume},  # Mount persistent volume
-    timeout=300,  # 5 minutes timeout
-    memory=2048,  # 2GB memory
+    volumes={"/persistent_model": model_volume},
+    timeout=300,
+    memory=2048,
     cpu=2.0,
     gpu="L4", 
-    # keep_warm=1 
-    # Removed keep_warm for cost optimization
-    # Cold start will be ~5-10 seconds but no continuous billing
-    concurrency_limit=10,  # Allow multiple concurrent requests
-    allow_concurrent_inputs=100,  # Queue up to 100 requests
+    keep_warm=0,  # Keep warm for production use
+    max_containers=10,  
 )
-@web_endpoint(method="POST", docs=True)
+@concurrent(max_inputs=100) 
+@fastapi_endpoint(method="POST", docs=True) 
 def analyze_voice_endpoint(
     audio_file: UploadFile = File(...),
     window_size: float = Form(default=1.0),
@@ -73,22 +72,41 @@ def analyze_voice_endpoint(
     Returns:
     - JSON with frame-by-frame analysis results
     """
+    # Start total timing
+    start_total = time.time()
+    timing_info = {}
+    
     try:
-        # Load and process the uploaded audio file
+        print(f"Starting voice analysis at {time.strftime('%H:%M:%S')}")
+        
+        # Step 1: Read audio file
+        step_start = time.time()
         audio_bytes = audio_file.file.read()
+        timing_info['file_read'] = time.time() - step_start
+        print(f"File read: {timing_info['file_read']:.3f}s")
         
-        # Load audio using librosa
+        # Step 2: Load and process audio with librosa
+        step_start = time.time()
         audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=16000, mono=True)
+        timing_info['audio_processing'] = time.time() - step_start
+        print(f"🎵 Audio processing: {timing_info['audio_processing']:.3f}s")
         
-        # Load the official model (with caching)
+        # Step 3: Load model (with caching)
+        step_start = time.time()
         model, interface = load_official_model()
+        timing_info['model_loading'] = time.time() - step_start
+        print(f"Model loading: {timing_info['model_loading']:.3f}s")
         
-        # Analyze the audio
+        # Step 4: VAD analysis
+        step_start = time.time()
         results = predict_vad_frames_with_envelope_official(
             audio, interface, window_size, hop_size
         )
+        timing_info['vad_analysis'] = time.time() - step_start
+        print(f"🔬 VAD analysis: {timing_info['vad_analysis']:.3f}s")
         
-        # Format results for JSON response
+        # Step 5: Format results
+        step_start = time.time()
         response_data = {
             "status": "success",
             "metadata": {
@@ -98,6 +116,7 @@ def analyze_voice_endpoint(
                 "audio_duration": len(audio) / sr,
                 "sample_rate": sr
             },
+            "timing": timing_info,  # Add timing info to response
             "frames": []
         }
         
@@ -123,17 +142,28 @@ def analyze_voice_endpoint(
             "values": results['full_envelope'].tolist()
         }
         
+        timing_info['response_formatting'] = time.time() - step_start
+        timing_info['total_time'] = time.time() - start_total
+        
+        print(f"Response formatting: {timing_info['response_formatting']:.3f}s")
+        print(f"Total processing time: {timing_info['total_time']:.3f}s")
+        print(f"Analysis completed at {time.strftime('%H:%M:%S')}")
+        
         return JSONResponse(content=response_data)
         
     except Exception as e:
+        total_time = time.time() - start_total
+        print(f"Error after {total_time:.3f}s: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing audio: {str(e)}")
 
 
 def load_official_model():
     """Load the official ONNX model with multi-level caching"""
+    load_start = time.time()
+    
     # Check if model is already cached in memory
     if hasattr(load_official_model, '_cached_model'):
-        print("Using in-memory cached model")
+        print(f"Using in-memory cached model ({time.time() - load_start:.3f}s)")
         return load_official_model._cached_model
     
     print("Loading official model...")
@@ -141,11 +171,12 @@ def load_official_model():
     # Try to use model from persistent volume first
     persistent_model_path = "/persistent_model/w2v2_model"
     if os.path.exists(persistent_model_path):
-        print("Using model from persistent volume")
+        print(f"Using model from persistent volume")
         model_root = persistent_model_path
     else:
         # Fall back to model baked into image, then copy to persistent volume
         print("Using model from image, copying to persistent volume...")
+        copy_start = time.time()
         image_model_path = "/model_cache/model"
         if os.path.exists(image_model_path):
             os.makedirs("/persistent_model", exist_ok=True)
@@ -154,6 +185,7 @@ def load_official_model():
             model_root = persistent_model_path
             # Commit the volume to persist the model
             model_volume.commit()
+            print(f"📁 Model copied to persistent volume ({time.time() - copy_start:.3f}s)")
         else:
             # Critical error: model should have been baked into image during deployment
             error_msg = (
@@ -165,9 +197,13 @@ def load_official_model():
             print(error_msg)
             raise FileNotFoundError(error_msg)
     
+    # Load the actual model
+    model_load_start = time.time()
     model = audonnx.load(model_root)
+    print(f"Model loaded from disk ({time.time() - model_load_start:.3f}s)")
     
-    # Create interface for easier usage
+    # Create interface
+    interface_start = time.time()
     interface = audinterface.Feature(
         model.labels('logits'),
         process_func=model,
@@ -176,39 +212,14 @@ def load_official_model():
         resample=True,
         verbose=False,
     )
+    print(f"🔧 Interface created ({time.time() - interface_start:.3f}s)")
     
     # Cache the loaded model in memory
     load_official_model._cached_model = (model, interface)
-    print("Model loaded and cached successfully")
+    total_load_time = time.time() - load_start
+    print(f"Model loaded and cached successfully (total: {total_load_time:.3f}s)")
     
     return model, interface
-
-
-# def download_official_model_fallback():
-#     """Fallback model download function"""
-#     model_root = '/persistent_model/w2v2_model'
-#     cache_root = '/tmp/cache'
-    
-#     os.makedirs(cache_root, exist_ok=True)
-#     os.makedirs('/persistent_model', exist_ok=True)
-    
-#     def cache_path(file):
-#         return os.path.join(cache_root, file)
-    
-#     url = 'https://zenodo.org/record/6221127/files/w2v2-L-robust-12.6bc4a7fd-1.1.0.zip'
-#     dst_path = cache_path('model.zip')
-    
-#     if not os.path.exists(dst_path):
-#         print("Downloading official model...")
-#         audeer.download_url(url, dst_path, verbose=True)
-    
-#     if not os.path.exists(model_root):
-#         print("Extracting model...")
-#         audeer.extract_archive(dst_path, model_root, verbose=True)
-#         # Commit to persistent volume
-#         model_volume.commit()
-    
-#     return model_root
 
 
 def predict_vad_official(audio, interface):
@@ -238,6 +249,8 @@ def extract_audio_envelope(audio, sr=16000, hop_length=512):
 
 def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0, hop_size=0.25):
     """Predict VAD frame-by-frame using official model + extract envelope"""
+    analysis_start = time.time()
+    
     sr = 16000
     window_samples = int(window_size * sr)
     hop_samples = int(hop_size * sr)
@@ -247,9 +260,14 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
     times = []
     
     # Extract full envelope
+    envelope_start = time.time()
     full_envelope_times, full_envelope = extract_audio_envelope(audio, sr)
+    envelope_time = time.time() - envelope_start
+    print(f"Full envelope extraction: {envelope_time:.3f}s")
     
     # Sliding window for VAD
+    frames_start = time.time()
+    frame_count = 0
     for start in range(0, len(audio) - window_samples + 1, hop_samples):
         end = start + window_samples
         window_audio = audio[start:end]
@@ -269,11 +287,21 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
         })
         
         times.append(start / sr)
+        frame_count += 1
+    
+    frames_time = time.time() - frames_start
+    print(f"Frame-by-frame analysis: {frames_time:.3f}s ({frame_count} frames, {frames_time/frame_count:.3f}s per frame)")
     
     # Convert to arrays
+    array_start = time.time()
     arousal = [frame['arousal'] for frame in vad_frames]
     dominance = [frame['dominance'] for frame in vad_frames] 
     valence = [frame['valence'] for frame in vad_frames]
+    array_time = time.time() - array_start
+    print(f"Array conversion: {array_time:.3f}s")
+    
+    total_analysis_time = time.time() - analysis_start
+    print(f"Total VAD analysis: {total_analysis_time:.3f}s")
     
     return {
         'times': np.array(times),
@@ -290,19 +318,8 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
 
 # Add CORS middleware for Netlify app integration
 @app.function(image=image)
-@web_endpoint(method="GET")
+@fastapi_endpoint(method="GET")
 def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "message": "Voice Analysis API is running"}
 
-
-if __name__ == "__main__":
-    # For local testing
-    import modal
-    print("Deploy with: modal deploy modal_voice_analysis.py")
-    print("\nCost Optimization Notes:")
-    print("- No keep_warm: Only pay when processing requests")
-    print("- Cold start: ~5-10 seconds (model loads from persistent volume)")
-    print("- Warm requests: ~100ms (model cached in memory)")
-    print("- Instance auto-shuts down after idle period")
-    print("\nOptional: Add keep_warm=1 for production if you need <1s response times")
