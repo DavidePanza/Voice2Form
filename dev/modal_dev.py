@@ -11,6 +11,8 @@ from modal import App, Image, fastapi_endpoint, Volume, concurrent
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+import soundfile as sf
+from scipy.signal import resample
 
 # Create the Modal app
 app = App("voice-analysis-api")
@@ -30,7 +32,8 @@ image = (
         "pandas",
         "fastapi",
         "python-multipart",
-        "soundfile"
+        "soundfile",
+        "scipy"
     ])
     .apt_install(["ffmpeg"])
     # Download model during image build
@@ -85,9 +88,9 @@ def analyze_voice_endpoint(
         timing_info['file_read'] = time.time() - step_start
         print(f"File read: {timing_info['file_read']:.3f}s")
         
-        # Step 2: Load and process audio with librosa
+        # Step 2: Load and process audio with optimized method
         step_start = time.time()
-        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=16000, mono=True)
+        audio, sr = load_audio_optimized(audio_bytes, target_sr=16000)
         timing_info['audio_processing'] = time.time() - step_start
         print(f"🎵 Audio processing: {timing_info['audio_processing']:.3f}s")
         
@@ -222,6 +225,34 @@ def load_official_model():
     return model, interface
 
 
+def load_audio_optimized(audio_bytes, target_sr=16000):
+    """Fast audio loading: soundfile + scipy resample + librosa fallback"""
+    try:
+        print("🎵 Using soundfile...")
+        audio, sr = sf.read(io.BytesIO(audio_bytes), dtype='float32')
+        print(f"📊 Loaded: {len(audio)} samples at {sr}Hz")
+        
+        # Convert stereo to mono if needed
+        if len(audio.shape) > 1:
+            print(f"🔄 Converting {audio.shape[1]} channels to mono")
+            audio = np.mean(audio, axis=1)
+        
+        # Resample if needed using scipy
+        if sr != target_sr:
+            print(f"🔄 Resampling {sr}Hz → {target_sr}Hz with scipy")
+            target_length = int(len(audio) * target_sr / sr)
+            audio = resample(audio, target_length).astype('float32')
+            sr = target_sr
+        else:
+            print(f"✅ Already {target_sr}Hz")
+            
+        return audio, sr
+        
+    except Exception as e:
+        print(f"❌ Soundfile failed: {e}, using librosa fallback")
+        return librosa.load(io.BytesIO(audio_bytes), sr=target_sr, mono=True)
+
+
 def predict_vad_official(audio, interface):
     """Predict VAD using official model"""
     # Process audio
@@ -247,8 +278,19 @@ def extract_audio_envelope(audio, sr=16000, hop_length=512):
     return envelope_times, rms_envelope
 
 
+def extract_window_envelope_fast(window_audio, sr=16000):
+    """Fast envelope extraction for a single window using NumPy"""
+    # Simple RMS calculation - much faster than librosa
+    rms = np.sqrt(np.mean(window_audio ** 2))
+    
+    return {
+        'mean_amplitude': float(rms),
+        'max_amplitude': float(np.max(np.abs(window_audio))),
+        'amplitude_std': float(np.std(window_audio))
+    }
+
 def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0, hop_size=0.25):
-    """Predict VAD frame-by-frame using official model + extract envelope"""
+    """Predict VAD frame-by-frame using official model + fast envelope per window + full envelope times"""
     analysis_start = time.time()
     
     sr = 16000
@@ -259,15 +301,20 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
     envelope_segments = []
     times = []
     
-    # Extract full envelope
-    envelope_start = time.time()
-    full_envelope_times, full_envelope = extract_audio_envelope(audio, sr)
-    envelope_time = time.time() - envelope_start
-    print(f"Full envelope extraction: {envelope_time:.3f}s")
+    # Generate full envelope TIMES only (super fast, no actual envelope calculation)
+    print("📈 Generating full envelope times...")
+    envelope_times_start = time.time()
+    hop_length = 512  # Standard hop length for envelope timing
+    num_frames = len(audio) // hop_length + 1
+    full_envelope_times = librosa.frames_to_time(np.arange(num_frames), sr=sr, hop_length=hop_length)
+    envelope_times_time = time.time() - envelope_times_start
+    print(f"📈 Full envelope times: {envelope_times_time:.3f}s ({len(full_envelope_times)} time points)")
     
-    # Sliding window for VAD
+    # Sliding window for VAD + envelope per window
+    print("🔬 Starting frame-by-frame analysis...")
     frames_start = time.time()
     frame_count = 0
+    
     for start in range(0, len(audio) - window_samples + 1, hop_samples):
         end = start + window_samples
         window_audio = audio[start:end]
@@ -276,15 +323,9 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
         vad = predict_vad_official(window_audio, interface)
         vad_frames.append(vad)
         
-        # Extract envelope for this segment
-        seg_times, seg_envelope = extract_audio_envelope(window_audio, sr)
-        envelope_segments.append({
-            'times': seg_times + (start / sr),
-            'envelope': seg_envelope,
-            'mean_amplitude': np.mean(seg_envelope),
-            'max_amplitude': np.max(seg_envelope),
-            'amplitude_std': np.std(seg_envelope)
-        })
+        # Fast envelope for THIS window only
+        envelope_data = extract_window_envelope_fast(window_audio, sr)
+        envelope_segments.append(envelope_data)
         
         times.append(start / sr)
         frame_count += 1
@@ -301,7 +342,7 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
     print(f"Array conversion: {array_time:.3f}s")
     
     total_analysis_time = time.time() - analysis_start
-    print(f"Total VAD analysis: {total_analysis_time:.3f}s")
+    print(f"🔬 Total VAD analysis: {total_analysis_time:.3f}s")
     
     return {
         'times': np.array(times),
@@ -309,8 +350,8 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
         'dominance': np.array(dominance),
         'valence': np.array(valence),
         'envelope_segments': envelope_segments,
-        'full_envelope_times': full_envelope_times,
-        'full_envelope': full_envelope,
+        'full_envelope_times': full_envelope_times,  # Fast time array
+        'full_envelope': np.array([]),  # Empty array since you don't need values
         'window_size': window_size,
         'hop_size': hop_size
     }
