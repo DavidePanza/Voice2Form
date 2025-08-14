@@ -131,19 +131,9 @@ def analyze_voice_endpoint(
                 "valence": float(results['valence'][i]),
                 "arousal": float(results['arousal'][i]),
                 "dominance": float(results['dominance'][i]),
-                "envelope": {
-                    "mean_amplitude": float(results['envelope_segments'][i]['mean_amplitude']),
-                    "max_amplitude": float(results['envelope_segments'][i]['max_amplitude']),
-                    "amplitude_std": float(results['envelope_segments'][i]['amplitude_std'])
-                }
+                "envelope": float(results['envelope_segments'][i])  # Changed: now just a float, not a dict
             }
             response_data["frames"].append(frame_data)
-        
-        # Add full envelope data
-        response_data["full_envelope"] = {
-            "times": results['full_envelope_times'].tolist(),
-            "values": results['full_envelope'].tolist()
-        }
         
         timing_info['response_formatting'] = time.time() - step_start
         timing_info['total_time'] = time.time() - start_total
@@ -278,19 +268,13 @@ def extract_audio_envelope(audio, sr=16000, hop_length=512):
     return envelope_times, rms_envelope
 
 
-def extract_window_envelope_fast(window_audio, sr=16000):
-    """Fast envelope extraction for a single window using NumPy"""
-    # Simple RMS calculation - much faster than librosa
-    rms = np.sqrt(np.mean(window_audio ** 2))
-    
-    return {
-        'mean_amplitude': float(rms),
-        'max_amplitude': float(np.max(np.abs(window_audio))),
-        'amplitude_std': float(np.std(window_audio))
-    }
+def extract_window_envelope_simple(window_audio, sr=16000):
+    """Simple envelope extraction - just RMS value"""
+    return float(np.sqrt(np.mean(window_audio ** 2)))
+
 
 def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0, hop_size=0.25):
-    """Predict VAD frame-by-frame using official model + fast envelope per window + full envelope times"""
+    """Predict VAD frame-by-frame using official model + simple envelope per window"""
     analysis_start = time.time()
     
     sr = 16000
@@ -298,13 +282,13 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
     hop_samples = int(hop_size * sr)
     
     vad_frames = []
-    envelope_segments = []
+    envelope_segments = []  # Now just simple float values
     times = []
     
-    # Generate full envelope TIMES only (super fast, no actual envelope calculation)
+    # Generate full envelope TIMES only (super fast)
     print("📈 Generating full envelope times...")
     envelope_times_start = time.time()
-    hop_length = 512  # Standard hop length for envelope timing
+    hop_length = 512
     num_frames = len(audio) // hop_length + 1
     full_envelope_times = librosa.frames_to_time(np.arange(num_frames), sr=sr, hop_length=hop_length)
     envelope_times_time = time.time() - envelope_times_start
@@ -323,9 +307,9 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
         vad = predict_vad_official(window_audio, interface)
         vad_frames.append(vad)
         
-        # Fast envelope for THIS window only
-        envelope_data = extract_window_envelope_fast(window_audio, sr)
-        envelope_segments.append(envelope_data)
+        # Simple envelope for THIS window - just the RMS value
+        envelope_value = extract_window_envelope_simple(window_audio, sr)
+        envelope_segments.append(envelope_value)
         
         times.append(start / sr)
         frame_count += 1
@@ -349,9 +333,9 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
         'arousal': np.array(arousal),
         'dominance': np.array(dominance),
         'valence': np.array(valence),
-        'envelope_segments': envelope_segments,
-        'full_envelope_times': full_envelope_times,  # Fast time array
-        'full_envelope': np.array([]),  # Empty array since you don't need values
+        'envelope_segments': envelope_segments,  # Now just array of float values
+        #'full_envelope_times': full_envelope_times,
+        #'full_envelope': np.array([]),
         'window_size': window_size,
         'hop_size': hop_size
     }
