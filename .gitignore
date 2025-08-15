@@ -2,4 +2,5 @@ cache/
 model/
 __pycache__/
 data/
-README.md
+notebooks/
+.DS_Store
