@@ -102,7 +102,7 @@ def analyze_voice_endpoint(
         
         # Step 4: VAD analysis
         step_start = time.time()
-        results = predict_vad_frames_with_envelope_official(
+        results = get_vad_and_envelope(
             audio, interface, window_size, hop_size
         )
         timing_info['vad_analysis'] = time.time() - step_start
@@ -123,25 +123,20 @@ def analyze_voice_endpoint(
             "frames": []
         }
         
-        # Add frame-by-frame results
-        for i in range(len(results['times'])):
-            frame_data = {
-                "frame_index": i,
-                "time": float(results['times'][i]),
-                "valence": float(results['valence'][i]),
-                "arousal": float(results['arousal'][i]),
-                "dominance": float(results['dominance'][i]),
-                "envelope": float(results['envelope_segments'][i])  # Changed: now just a float, not a dict
-            }
-            response_data["frames"].append(frame_data)
-        
-        timing_info['response_formatting'] = time.time() - step_start
-        timing_info['total_time'] = time.time() - start_total
-        
+        response_data = {
+            "times": results['times'],       
+            "valence": results['valence'],
+            "arousal": results['arousal'],
+            "dominance": results['dominance'],
+            "envelope": results['envelope_frames'],    
+            "window_size": results['window_size'],
+            "hop_size": results['hop_size']
+        }
+
         print(f"Response formatting: {timing_info['response_formatting']:.3f}s")
         print(f"Total processing time: {timing_info['total_time']:.3f}s")
         print(f"Analysis completed at {time.strftime('%H:%M:%S')}")
-        
+
         return JSONResponse(content=response_data)
         
     except Exception as e:
@@ -243,7 +238,7 @@ def load_audio_optimized(audio_bytes, target_sr=16000):
         return librosa.load(io.BytesIO(audio_bytes), sr=target_sr, mono=True)
 
 
-def predict_vad_official(audio, interface):
+def predict_vad(audio, interface):
     """Predict VAD using official model"""
     # Process audio
     result = interface.process_signal(audio, 16000)
@@ -260,12 +255,12 @@ def predict_vad_official(audio, interface):
     }
 
 
-def extract_window_envelope_simple(window_audio, sr=16000):
+def extract_window_envelope(window_audio, sr=16000):
     """Simple envelope extraction - just RMS value"""
     return float(np.sqrt(np.mean(window_audio ** 2))) # this is faster than librosa
 
 
-def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0, hop_size=0.25):
+def get_vad_and_envelope(audio, interface, window_size=1.0, hop_size=0.25):
     """Predict VAD frame-by-frame using official model + simple envelope per window"""
     analysis_start = time.time()
     
@@ -287,11 +282,11 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
         window_audio = audio[start:end]
         
         # Predict VAD for this window
-        vad = predict_vad_official(window_audio, interface)
+        vad = predict_vad(window_audio, interface)
         vad_frames.append(vad)
         
         # Simple envelope for THIS window - just the RMS value
-        envelope_value = extract_window_envelope_simple(window_audio, sr)
+        envelope_value = extract_window_envelope(window_audio, sr)
         envelope_frames.append(envelope_value)
         
         times.append(start / sr) # time in seconds
@@ -312,10 +307,10 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
     print(f"Total VAD analysis: {total_analysis_time:.3f}s")
     
     return {
-        'times': np.array(times),
-        'arousal': np.array(arousal),
-        'dominance': np.array(dominance),
-        'valence': np.array(valence),
+        'times': times,
+        'arousal': arousal,
+        'dominance': dominance,
+        'valence': valence,
         'envelope_frames': envelope_frames,  # Now just array of float values
         #'full_envelope_times': full_envelope_times,
         #'full_envelope': np.array([]),
