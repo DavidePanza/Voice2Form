@@ -7,6 +7,7 @@ import librosa
 import audeer
 import audonnx
 import audinterface
+import onnxruntime as ort
 from modal import App, Image, fastapi_endpoint, Volume, concurrent
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -96,7 +97,7 @@ def analyze_voice_endpoint(
         
         # Step 3: Load model (with caching)
         step_start = time.time()
-        model, interface = load_official_model()
+        _, interface = load_official_model()
         timing_info['model_loading'] = time.time() - step_start
         print(f"Model loading: {timing_info['model_loading']:.3f}s")
         
@@ -154,7 +155,7 @@ def load_official_model():
     """Load the official ONNX model with multi-level caching"""
     load_start = time.time()
     
-    # Check if model is already cached in memory
+    # Check if model is already cached in memory (only for warm starts)
     if hasattr(load_official_model, '_cached_model'):
         print(f"Using in-memory cached model ({time.time() - load_start:.3f}s)")
         return load_official_model._cached_model
@@ -172,11 +173,11 @@ def load_official_model():
         copy_start = time.time()
         image_model_path = "/model_cache/model"
         if os.path.exists(image_model_path):
-            os.makedirs("/persistent_model", exist_ok=True)
+            os.makedirs("/persistent_model", exist_ok=True) # needed as copytree requires the parent directory to exist
             import shutil
             shutil.copytree(image_model_path, persistent_model_path)
             model_root = persistent_model_path
-            # Commit the volume to persist the model
+            # Commit the volume to persist the model (required by Modal)
             model_volume.commit()
             print(f"Model copied to persistent volume ({time.time() - copy_start:.3f}s)")
         else:
