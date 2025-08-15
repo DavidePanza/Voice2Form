@@ -1,15 +1,13 @@
 import os
 import io
-import json
 import time
 import numpy as np
 import librosa
-import audeer
 import audonnx
 import audinterface
 from modal import App, Image, fastapi_endpoint, Volume, concurrent
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import HTTPException, File, UploadFile, Form
+# from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import soundfile as sf
 from scipy.signal import resample
@@ -52,7 +50,7 @@ image = (
     volumes={"/persistent_model": model_volume},
     timeout=300,
     memory=2048,
-    cpu=4.0,
+    cpu=2.0,
     #gpu="L4", # onnx models doesn't need GPU
     #min_containers=1,   # Minimum number of containers to keep running
     max_containers=10,  
@@ -110,6 +108,10 @@ def analyze_voice_endpoint(
         
         # Step 5: Format results
         step_start = time.time()
+
+        # Calculate total time before using it
+        timing_info['total_time'] = time.time() - start_total
+
         response_data = {
             "status": "success",
             "metadata": {
@@ -119,19 +121,18 @@ def analyze_voice_endpoint(
                 "audio_duration": len(audio) / sr,
                 "sample_rate": sr
             },
-            "timing": timing_info,  # Add timing info to response
-            "frames": []
+            "timing": timing_info,
+            "data": {
+                "times": results['times'],       
+                "valence": results['valence'],
+                "arousal": results['arousal'],
+                "dominance": results['dominance'],
+                "envelope": results['envelope_frames']
+            }
         }
-        
-        response_data = {
-            "times": results['times'],       
-            "valence": results['valence'],
-            "arousal": results['arousal'],
-            "dominance": results['dominance'],
-            "envelope": results['envelope_frames'],    
-            "window_size": results['window_size'],
-            "hop_size": results['hop_size']
-        }
+
+        # Add the missing timing calculation
+        timing_info['response_formatting'] = time.time() - step_start
 
         print(f"Response formatting: {timing_info['response_formatting']:.3f}s")
         print(f"Total processing time: {timing_info['total_time']:.3f}s")
@@ -199,6 +200,7 @@ def load_official_model():
         sampling_rate=16000,
         resample=True,
         verbose=False,
+        num_workers=4, 
     )
     print(f"Interface created ({time.time() - interface_start:.3f}s)")
     
@@ -244,9 +246,9 @@ def predict_vad(audio, interface):
     result = interface.process_signal(audio, 16000)
     
     # Extract values (result is a pandas DataFrame)
-    arousal = float(result['arousal'].iloc[0])
-    dominance = float(result['dominance'].iloc[0])
-    valence = float(result['valence'].iloc[0])
+    arousal = round(float(result['arousal'].iloc[0]), 3)
+    dominance = round(float(result['dominance'].iloc[0]), 3)
+    valence = round(float(result['valence'].iloc[0]), 3)
     
     return {
         'arousal': arousal,
@@ -276,24 +278,48 @@ def get_vad_and_envelope(audio, interface, window_size=1.0, hop_size=0.25):
     print("Starting frame-by-frame analysis...")
     frames_start = time.time()
     frame_count = 0
+    debug_timing = True
+
+    if debug_timing:
+        env_times = 0
+        vad_times = 0
     
     for start in range(0, len(audio) - window_samples + 1, hop_samples):
         end = start + window_samples
         window_audio = audio[start:end]
         
-        # Predict VAD for this window
-        vad = predict_vad(window_audio, interface)
-        vad_frames.append(vad)
+        if debug_timing:
+            # Predict VAD for this window
+            vad_start = time.time()
+            vad = predict_vad(window_audio, interface)
+            vad_frames.append(vad)
+            vad_time = time.time() - vad_start
+            vad_times += vad_time
+            
+            # Simple envelope for THIS window - just the RMS value
+            env_start = time.time()
+            envelope_value = round(extract_window_envelope(window_audio, sr),4)
+            envelope_frames.append(envelope_value)
+            env_time = time.time() - env_start
+            env_times += env_time
         
-        # Simple envelope for THIS window - just the RMS value
-        envelope_value = extract_window_envelope(window_audio, sr)
-        envelope_frames.append(envelope_value)
+        else:
+            # Predict VAD for this window
+            vad = predict_vad(window_audio, interface)
+            vad_frames.append(vad)
+            
+            # Simple envelope for THIS window - just the RMS value
+            envelope_value = round(extract_window_envelope(window_audio, sr), 4)
+            envelope_frames.append(envelope_value)
         
         times.append(start / sr) # time in seconds
         frame_count += 1
     
     frames_time = time.time() - frames_start
     print(f"Frame-by-frame analysis: {frames_time:.3f}s ({frame_count} frames, {frames_time/frame_count:.3f}s per frame)")
+
+    if debug_timing:
+        print(f"Total VAD time: {vad_times:.3f}s, Total envelope time: {env_times:.3f}s")
     
     # Convert to arrays
     array_start = time.time()
