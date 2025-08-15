@@ -21,7 +21,7 @@
     </div>
     
     <div class="section">
-        <label>Audio File:</label><br>
+        <h3>Upload Audio File</h3>
         <input type="file" id="audioFile" accept="audio/*">
         <div id="fileInfo"></div>
     </div>
@@ -31,7 +31,7 @@
         <label>Hop Size:</label> <input type="number" id="hopSize" value="0.25" step="0.05">
     </div>
     
-    <button id="analyzeBtn" onclick="analyzeAudio()">Analyze Audio</button>
+    <button id="analyzeBtn">Analyze Audio</button>
     
     <div class="section">
         <h3>Processing Log:</h3>
@@ -43,171 +43,6 @@
         <div id="resultsContent"></div>
     </div>
 
-    <script>
-        let log = document.getElementById('log');
-        
-        function addLog(message) {
-            log.textContent += new Date().toLocaleTimeString() + ' - ' + message + '\n';
-            log.scrollTop = log.scrollHeight;
-        }
-
-        async function resampleAudio(audioBuffer, targetSampleRate = 16000) {
-            const originalSampleRate = audioBuffer.sampleRate;
-            
-            if (originalSampleRate === targetSampleRate) {
-                addLog(`✅ Already ${targetSampleRate}Hz`);
-                return audioBuffer;
-            }
-            
-            addLog(`🔄 Resampling ${originalSampleRate}Hz → ${targetSampleRate}Hz`);
-            
-            const offlineContext = new OfflineAudioContext(
-                1,
-                audioBuffer.duration * targetSampleRate,
-                targetSampleRate
-            );
-            
-            const source = offlineContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(offlineContext.destination);
-            source.start();
-            
-            const resampledBuffer = await offlineContext.startRendering();
-            addLog(`✅ Resampled to ${resampledBuffer.length} samples`);
-            
-            return resampledBuffer;
-        }
-
-        function audioBufferToWav(audioBuffer) {
-            const length = audioBuffer.length;
-            const arrayBuffer = new ArrayBuffer(44 + length * 2);
-            const view = new DataView(arrayBuffer);
-            
-            // WAV header
-            const writeString = (offset, string) => {
-                for (let i = 0; i < string.length; i++) {
-                    view.setUint8(offset + i, string.charCodeAt(i));
-                }
-            };
-            
-            writeString(0, 'RIFF');
-            view.setUint32(4, 36 + length * 2, true);
-            writeString(8, 'WAVE');
-            writeString(12, 'fmt ');
-            view.setUint32(16, 16, true);
-            view.setUint16(20, 1, true);
-            view.setUint16(22, 1, true);
-            view.setUint32(24, audioBuffer.sampleRate, true);
-            view.setUint32(28, audioBuffer.sampleRate * 2, true);
-            view.setUint16(32, 2, true);
-            view.setUint16(34, 16, true);
-            writeString(36, 'data');
-            view.setUint32(40, length * 2, true);
-            
-            // Convert float samples to 16-bit PCM
-            const channelData = audioBuffer.getChannelData(0);
-            let offset = 44;
-            for (let i = 0; i < length; i++) {
-                const sample = Math.max(-1, Math.min(1, channelData[i]));
-                view.setInt16(offset, sample * 0x7FFF, true);
-                offset += 2;
-            }
-            
-            return arrayBuffer;
-        }
-
-        async function analyzeAudio() {
-            const fileInput = document.getElementById('audioFile');
-            const endpoint = document.getElementById('endpoint').value;
-            const windowSize = parseFloat(document.getElementById('windowSize').value);
-            const hopSize = parseFloat(document.getElementById('hopSize').value);
-            const analyzeBtn = document.getElementById('analyzeBtn');
-            
-            if (!fileInput.files[0]) {
-                alert('Please select an audio file');
-                return;
-            }
-            
-            if (!endpoint.includes('modal.run')) {
-                alert('Please enter your Modal endpoint URL');
-                return;
-            }
-            
-            analyzeBtn.disabled = true;
-            log.textContent = '';
-            document.getElementById('results').style.display = 'none';
-            
-            try {
-                const file = fileInput.files[0];
-                addLog(`📁 Processing: ${file.name} (${file.size} bytes)`);
-                
-                // Read file into AudioBuffer
-                const arrayBuffer = await file.arrayBuffer();
-                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                
-                addLog(`🎵 Original: ${audioBuffer.duration.toFixed(2)}s at ${audioBuffer.sampleRate}Hz`);
-                
-                // Client-side resample to 16kHz
-                const resampledBuffer = await resampleAudio(audioBuffer, 16000);
-                
-                // Convert to WAV
-                addLog('📦 Converting to WAV...');
-                const wavArrayBuffer = audioBufferToWav(resampledBuffer);
-                const wavBlob = new Blob([wavArrayBuffer], { type: 'audio/wav' });
-                
-                addLog(`📤 Uploading ${wavBlob.size} bytes (original: ${file.size})`);
-                
-                // Upload to Modal endpoint
-                const formData = new FormData();
-                formData.append('audio_file', wavBlob, 'audio_16khz.wav');
-                formData.append('window_size', windowSize.toString());
-                formData.append('hop_size', hopSize.toString());
-                
-                addLog('🚀 Sending to Modal...');
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-                
-                const results = await response.json();
-                addLog('✅ Analysis complete!');
-                
-                // Display results
-                document.getElementById('results').style.display = 'block';
-                document.getElementById('resultsContent').innerHTML = `
-                    <p><strong>Status:</strong> ${results.status}</p>
-                    <p><strong>Frames:</strong> ${results.metadata.total_frames}</p>
-                    <p><strong>Duration:</strong> ${results.metadata.audio_duration.toFixed(2)}s</p>
-                    <p><strong>Server Processing Time:</strong> ${results.timing.total_time.toFixed(2)}s</p>
-                    <details>
-                        <summary>View Frame Data (click to expand)</summary>
-                        <pre>${JSON.stringify(results.frames.slice(0, 5), null, 2)}...</pre>
-                    </details>
-                `;
-                
-            } catch (error) {
-                addLog(`❌ Error: ${error.message}`);
-                alert(`Error: ${error.message}`);
-            } finally {
-                analyzeBtn.disabled = false;
-            }
-        }
-
-        // Show file info when selected
-        document.addEventListener('DOMContentLoaded', function() {
-            document.getElementById('audioFile').addEventListener('change', function(e) {
-                const file = e.target.files[0];
-                if (file) {
-                    document.getElementById('fileInfo').innerHTML = 
-                        `Selected: ${file.name} (${(file.size/1024/1024).toFixed(2)} MB)`;
-                }
-            });
-        });
-    </script>
+    <script src="audio_utils.js"></script>
 </body>
 </html>
