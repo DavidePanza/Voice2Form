@@ -260,17 +260,9 @@ def predict_vad_official(audio, interface):
     }
 
 
-def extract_audio_envelope(audio, sr=16000, hop_length=512):
-    """Extract amplitude envelope from audio"""
-    rms_envelope = librosa.feature.rms(y=audio, hop_length=hop_length)[0]
-    envelope_times = librosa.frames_to_time(np.arange(len(rms_envelope)),
-                                           sr=sr, hop_length=hop_length)
-    return envelope_times, rms_envelope
-
-
 def extract_window_envelope_simple(window_audio, sr=16000):
     """Simple envelope extraction - just RMS value"""
-    return float(np.sqrt(np.mean(window_audio ** 2)))
+    return float(np.sqrt(np.mean(window_audio ** 2))) # this is faster than librosa
 
 
 def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0, hop_size=0.25):
@@ -282,20 +274,11 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
     hop_samples = int(hop_size * sr)
     
     vad_frames = []
-    envelope_segments = []  # Now just simple float values
+    envelope_frames = []  # Now just simple float values
     times = []
     
-    # Generate full envelope TIMES only (super fast)
-    print("📈 Generating full envelope times...")
-    envelope_times_start = time.time()
-    hop_length = 512
-    num_frames = len(audio) // hop_length + 1
-    full_envelope_times = librosa.frames_to_time(np.arange(num_frames), sr=sr, hop_length=hop_length)
-    envelope_times_time = time.time() - envelope_times_start
-    print(f"📈 Full envelope times: {envelope_times_time:.3f}s ({len(full_envelope_times)} time points)")
-    
     # Sliding window for VAD + envelope per window
-    print("🔬 Starting frame-by-frame analysis...")
+    print("Starting frame-by-frame analysis...")
     frames_start = time.time()
     frame_count = 0
     
@@ -309,9 +292,9 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
         
         # Simple envelope for THIS window - just the RMS value
         envelope_value = extract_window_envelope_simple(window_audio, sr)
-        envelope_segments.append(envelope_value)
+        envelope_frames.append(envelope_value)
         
-        times.append(start / sr)
+        times.append(start / sr) # time in seconds
         frame_count += 1
     
     frames_time = time.time() - frames_start
@@ -326,14 +309,14 @@ def predict_vad_frames_with_envelope_official(audio, interface, window_size=1.0,
     print(f"Array conversion: {array_time:.3f}s")
     
     total_analysis_time = time.time() - analysis_start
-    print(f"🔬 Total VAD analysis: {total_analysis_time:.3f}s")
+    print(f"Total VAD analysis: {total_analysis_time:.3f}s")
     
     return {
         'times': np.array(times),
         'arousal': np.array(arousal),
         'dominance': np.array(dominance),
         'valence': np.array(valence),
-        'envelope_segments': envelope_segments,  # Now just array of float values
+        'envelope_frames': envelope_frames,  # Now just array of float values
         #'full_envelope_times': full_envelope_times,
         #'full_envelope': np.array([]),
         'window_size': window_size,
