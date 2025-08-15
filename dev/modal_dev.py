@@ -57,7 +57,7 @@ image = (
     #min_containers=1,   # Minimum number of containers to keep running
     max_containers=10,  
 )
-@concurrent(max_inputs=100) 
+@concurrent(max_inputs=10) 
 @fastapi_endpoint(method="POST", docs=True) 
 def analyze_voice_endpoint(
     audio_file: UploadFile = File(...),
@@ -84,7 +84,7 @@ def analyze_voice_endpoint(
         
         # Step 1: Read audio file
         step_start = time.time()
-        audio_bytes = audio_file.file.read()
+        audio_bytes = audio_file.file.read() # Reads the raw bytes into memory.
         timing_info['file_read'] = time.time() - step_start
         print(f"File read: {timing_info['file_read']:.3f}s")
         
@@ -92,7 +92,7 @@ def analyze_voice_endpoint(
         step_start = time.time()
         audio, sr = load_audio_optimized(audio_bytes, target_sr=16000)
         timing_info['audio_processing'] = time.time() - step_start
-        print(f"🎵 Audio processing: {timing_info['audio_processing']:.3f}s")
+        print(f"Audio processing: {timing_info['audio_processing']:.3f}s")
         
         # Step 3: Load model (with caching)
         step_start = time.time()
@@ -106,7 +106,7 @@ def analyze_voice_endpoint(
             audio, interface, window_size, hop_size
         )
         timing_info['vad_analysis'] = time.time() - step_start
-        print(f"🔬 VAD analysis: {timing_info['vad_analysis']:.3f}s")
+        print(f"VAD analysis: {timing_info['vad_analysis']:.3f}s")
         
         # Step 5: Format results
         step_start = time.time()
@@ -178,7 +178,7 @@ def load_official_model():
             model_root = persistent_model_path
             # Commit the volume to persist the model
             model_volume.commit()
-            print(f"📁 Model copied to persistent volume ({time.time() - copy_start:.3f}s)")
+            print(f"Model copied to persistent volume ({time.time() - copy_start:.3f}s)")
         else:
             # Critical error: model should have been baked into image during deployment
             error_msg = (
@@ -205,7 +205,7 @@ def load_official_model():
         resample=True,
         verbose=False,
     )
-    print(f"🔧 Interface created ({time.time() - interface_start:.3f}s)")
+    print(f"Interface created ({time.time() - interface_start:.3f}s)")
     
     # Cache the loaded model in memory
     load_official_model._cached_model = (model, interface)
@@ -218,28 +218,28 @@ def load_official_model():
 def load_audio_optimized(audio_bytes, target_sr=16000):
     """Fast audio loading: soundfile + scipy resample + librosa fallback"""
     try:
-        print("🎵 Using soundfile...")
-        audio, sr = sf.read(io.BytesIO(audio_bytes), dtype='float32')
-        print(f"📊 Loaded: {len(audio)} samples at {sr}Hz")
+        print("Using soundfile...")
+        audio, sr = sf.read(io.BytesIO(audio_bytes), dtype='float32') # Reads audio from bytes
+        print(f"Loaded: {len(audio)} samples at {sr}Hz")
         
         # Convert stereo to mono if needed
         if len(audio.shape) > 1:
-            print(f"🔄 Converting {audio.shape[1]} channels to mono")
+            print(f"Converting {audio.shape[1]} channels to mono")
             audio = np.mean(audio, axis=1)
         
         # Resample if needed using scipy
         if sr != target_sr:
-            print(f"🔄 Resampling {sr}Hz → {target_sr}Hz with scipy")
+            print(f"Resampling {sr}Hz → {target_sr}Hz with scipy")
             target_length = int(len(audio) * target_sr / sr)
             audio = resample(audio, target_length).astype('float32')
             sr = target_sr
         else:
-            print(f"✅ Already {target_sr}Hz")
+            print(f"Already {target_sr}Hz")
             
         return audio, sr
         
     except Exception as e:
-        print(f"❌ Soundfile failed: {e}, using librosa fallback")
+        print(f"Soundfile failed: {e}, using librosa fallback")
         return librosa.load(io.BytesIO(audio_bytes), sr=target_sr, mono=True)
 
 
