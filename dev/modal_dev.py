@@ -7,7 +7,6 @@ import librosa
 import audeer
 import audonnx
 import audinterface
-import onnxruntime as ort
 from modal import App, Image, fastapi_endpoint, Volume, concurrent
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,8 +52,8 @@ image = (
     volumes={"/persistent_model": model_volume},
     timeout=300,
     memory=2048,
-    cpu=2.0,
-    gpu="L4", 
+    cpu=4.0,
+    #gpu="L4", # onnx models doesn't need GPU
     #min_containers=1,   # Minimum number of containers to keep running
     max_containers=10,  
 )
