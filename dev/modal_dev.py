@@ -281,6 +281,7 @@ def get_single_vad_and_envelope(audio, interface, window_size=1.0, hop_size=0.25
     vad_frames = []
     envelope_frames = []  # Now just simple float values
     times = []
+    frame_count = 0
 
     debug_timing = True
     if debug_timing:
@@ -291,7 +292,7 @@ def get_single_vad_and_envelope(audio, interface, window_size=1.0, hop_size=0.25
     if debug_timing:
         vad_start = time.time()
         vad_frames.append(predict_vad(audio, interface))
-        vad_times.append(time.time() - vad_start)
+        vad_times = time.time() - vad_start
     else:
         vad_frames.append(predict_vad(audio, interface))
     
