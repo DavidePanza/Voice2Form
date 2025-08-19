@@ -60,7 +60,8 @@ image = (
 def analyze_voice_endpoint(
     audio_file: UploadFile = File(...),
     window_size: float = Form(default=1.0),
-    hop_size: float = Form(default=0.25)
+    hop_size: float = Form(default=0.25),
+    use_single_VAD: bool = Form(default=True)
 ):
     """
     Analyze voice for VAD (Valence, Arousal, Dominance) + envelope extraction
@@ -100,9 +101,14 @@ def analyze_voice_endpoint(
         
         # Step 4: VAD analysis
         step_start = time.time()
-        results = get_vad_and_envelope(
-            audio, interface, window_size, hop_size
-        )
+        if use_single_VAD:
+            results = get_single_vad_and_envelope(
+                audio, interface, window_size, hop_size
+            )      
+        else:
+            results = get_vad_and_envelope(
+                audio, interface, window_size, hop_size
+            )
         timing_info['vad_analysis'] = time.time() - step_start
         print(f"VAD analysis: {timing_info['vad_analysis']:.3f}s")
         
@@ -262,10 +268,87 @@ def extract_window_envelope(window_audio, sr=16000):
     return float(np.sqrt(np.mean(window_audio ** 2))) # this is faster than librosa
 
 
+def get_single_vad_and_envelope(audio, interface, window_size=1.0, hop_size=0.25):
+    """Predict VAD frame-by-frame using official model + simple envelope per window"""
+    analysis_start = time.time()
+
+    # Initialize variables
+    sr = 16000
+    window_samples = int(window_size * sr)
+    hop_samples = int(hop_size * sr)
+    
+    # Initialize lists for results
+    vad_frames = []
+    envelope_frames = []  # Now just simple float values
+    times = []
+
+    debug_timing = True
+    if debug_timing:
+        env_times = 0
+        vad_times = 0
+
+    # Get single VAD
+    if debug_timing:
+        vad_start = time.time()
+        vad_frames.append(predict_vad(audio, interface))
+        vad_times.append(time.time() - vad_start)
+    else:
+        vad_frames.append(predict_vad(audio, interface))
+    
+    # Sliding window for envelope per window
+    print("Starting frame-by-frame analysis...")
+
+    for start in range(0, len(audio) - window_samples + 1, hop_samples):
+        end = start + window_samples
+        window_audio = audio[start:end]
+        
+        if debug_timing:
+            # Simple envelope for THIS window - just the RMS value
+            env_start = time.time()
+            envelope_value = round(extract_window_envelope(window_audio, sr),4)
+            envelope_frames.append(envelope_value)
+            env_time = time.time() - env_start
+            env_times += env_time
+        
+        else:  
+            # Simple envelope for THIS window - just the RMS value
+            envelope_value = round(extract_window_envelope(window_audio, sr), 4)
+            envelope_frames.append(envelope_value)
+        
+        times.append(start / sr) # time in seconds
+        frame_count += 1
+    
+    if debug_timing:
+        print(f"Total VAD time: {vad_times:.3f}s, Total envelope time: {env_times:.3f}s")
+    
+    # Convert to arrays
+    array_start = time.time()
+    arousal = [frame['arousal'] for frame in vad_frames]
+    dominance = [frame['dominance'] for frame in vad_frames] 
+    valence = [frame['valence'] for frame in vad_frames]
+    array_time = time.time() - array_start
+    print(f"Array conversion: {array_time:.3f}s")
+    
+    total_analysis_time = time.time() - analysis_start
+    print(f"Total VAD analysis: {total_analysis_time:.3f}s")
+    
+    return {
+        'times': times,
+        'arousal': arousal,
+        'dominance': dominance,
+        'valence': valence,
+        'envelope_frames': envelope_frames,  # Now just array of float values
+        #'full_envelope_times': full_envelope_times,
+        #'full_envelope': np.array([]),
+        'window_size': window_size,
+        'hop_size': hop_size
+    }
+
+
 def get_vad_and_envelope(audio, interface, window_size=1.0, hop_size=0.25):
     """Predict VAD frame-by-frame using official model + simple envelope per window"""
     analysis_start = time.time()
-    
+
     sr = 16000
     window_samples = int(window_size * sr)
     hop_samples = int(hop_size * sr)
