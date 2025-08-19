@@ -18,7 +18,8 @@ async function uploadAudio(file, endpoint, windowSize = 1.0, hopSize = 0.25) {
         formData.append('audio_file', file);
         formData.append('window_size', windowSize.toString());
         formData.append('hop_size', hopSize.toString());
-        
+        formData.append('use_single_VAD', document.getElementById('useSingleVAD').checked);
+
         addLog('Sending request...');
         const response = await fetch(endpoint, {
             method: 'POST',
